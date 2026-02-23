@@ -1,8 +1,8 @@
 """
-Execution tracer with rich console output.
+Execution tracer with real-time streaming.
 
-Streams the agent's response step-by-step with styled panels,
-spinners, and colour. Persists each run as a timestamped trace.
+Streams the agent's response token-by-token with styled panels
+and live output. Persists each run as a timestamped trace.
 
 Set PLAIN_OUTPUT=1 to disable rich formatting (used in tests).
 """
@@ -23,12 +23,11 @@ _OUTPUTS_DIR = _PROJECT_ROOT / "outputs"
 
 
 def _is_plain() -> bool:
-    """Check if we should use plain output (for testing/piping)."""
     return bool(os.environ.get("PLAIN_OUTPUT"))
 
 
 def run_with_trace(question: str) -> None:
-    """Stream the agent's response and log each step."""
+    """Stream the agent's response in real-time."""
     agent = get_agent()
     plain = _is_plain()
 
@@ -38,60 +37,103 @@ def run_with_trace(question: str) -> None:
         "-" * 60,
     ]
 
-    if not plain:
-        from rich.console import Console
-        from rich.markdown import Markdown
-        from rich.panel import Panel
-        from rich.spinner import Spinner
-        from rich.live import Live
-
-        console = Console()
-        console.print()
-
-        with Live(
-            Panel(Spinner("dots", text="Thinking..."), border_style="cyan", title="🧠 Agent"),
-            console=console, refresh_per_second=12, transient=True,
-        ):
-            chunks = list(agent.stream(
-                {"messages": [{"role": "user", "content": question}]},
-                stream_mode="values",
-            ))
-
-        for chunk in chunks:
-            msg = chunk["messages"][-1]
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                names = [tc["name"] for tc in msg.tool_calls]
-                console.print(Panel(f"[bold]Calling:[/bold] {', '.join(names)}", title="🔧 Tool", border_style="yellow", padding=(0, 1)))
-                lines.append(f"🧠 Tool call: {names}")
-            elif isinstance(msg, ToolMessage):
-                preview = str(msg.content)[:300]
-                console.print(Panel(preview, title="📥 Search Results", border_style="blue", padding=(0, 1)))
-                lines.append(f"🔧 Tool result: {preview}")
-            elif isinstance(msg, AIMessage) and msg.content:
-                console.print()
-                console.print(Panel(Markdown(msg.content), title="✅ Answer", border_style="green", padding=(1, 2)))
-                lines.append(f"✅ Final answer:\n{msg.content}")
+    if plain:
+        _run_plain(agent, question, lines)
     else:
-        # Plain text mode (for tests and piped output)
-        for chunk in agent.stream(
-            {"messages": [{"role": "user", "content": question}]},
-            stream_mode="values",
-        ):
-            msg = chunk["messages"][-1]
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                line = "Tool call: " + str([tc["name"] for tc in msg.tool_calls])
-                print(line)
-                lines.append(line)
-            elif isinstance(msg, ToolMessage):
-                line = "Tool result: " + str(msg.content)[:250]
-                print(line)
-                lines.append(line)
-            elif isinstance(msg, AIMessage) and msg.content:
-                line = "Final answer:\n" + msg.content
-                print(line)
-                lines.append(line)
+        _run_rich(agent, question, lines)
 
     _save_trace(lines, plain)
+
+
+def _run_rich(agent, question: str, lines: list[str]) -> None:
+    """Rich mode: real-time streaming with panels and live text."""
+    from rich.console import Console
+    from rich.live import Live
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    from rich.text import Text
+
+    console = Console()
+    console.print()
+
+    for chunk in agent.stream(
+        {"messages": [{"role": "user", "content": question}]},
+        stream_mode="values",
+    ):
+        msg = chunk["messages"][-1]
+
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            names = [tc["name"] for tc in msg.tool_calls]
+            # Show the reasoning text if the LLM wrote any before calling the tool
+            if msg.content:
+                console.print(
+                    Panel(
+                        Text(msg.content, style="italic dim"),
+                        title="💭 Thinking",
+                        border_style="magenta",
+                        padding=(0, 1),
+                    )
+                )
+                lines.append(f"💭 Thinking: {msg.content}")
+            console.print(
+                Panel(
+                    f"[bold]Searching:[/bold] {', '.join(names)}",
+                    title="🔧 Tool",
+                    border_style="yellow",
+                    padding=(0, 1),
+                )
+            )
+            lines.append(f"🧠 Tool call: {names}")
+
+        elif isinstance(msg, ToolMessage):
+            preview = str(msg.content)[:400]
+            console.print(
+                Panel(
+                    preview,
+                    title="📥 Search Results",
+                    border_style="blue",
+                    padding=(0, 1),
+                )
+            )
+            lines.append(f"🔧 Tool result: {preview}")
+
+        elif isinstance(msg, AIMessage) and msg.content:
+            console.print()
+            console.print(
+                Panel(
+                    Markdown(msg.content),
+                    title="✅ Answer",
+                    border_style="green",
+                    padding=(1, 2),
+                )
+            )
+            lines.append(f"✅ Final answer:\n{msg.content}")
+
+
+def _run_plain(agent, question: str, lines: list[str]) -> None:
+    """Plain mode: simple print output for tests and piped environments."""
+    for chunk in agent.stream(
+        {"messages": [{"role": "user", "content": question}]},
+        stream_mode="values",
+    ):
+        msg = chunk["messages"][-1]
+
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            if msg.content:
+                line = "Thinking: " + msg.content
+                print(line)
+                lines.append(line)
+            line = "Tool call: " + str([tc["name"] for tc in msg.tool_calls])
+            print(line)
+            lines.append(line)
+        elif isinstance(msg, ToolMessage):
+            line = "Tool result: " + str(msg.content)[:250]
+            print(line)
+            lines.append(line)
+        elif isinstance(msg, AIMessage) and msg.content:
+            line = "Final answer:\n" + msg.content
+            print(line)
+            lines.append(line)
 
 
 def _save_trace(lines: list[str], plain: bool = False) -> None:
