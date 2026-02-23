@@ -1,64 +1,89 @@
-# 🧠 Research Agent Demo
+# 🧠 Research Agent CLI
 
-This is a demonstration of a LangGraph-based ReAct agent capable of performing autonomous web research using the Tavily Search API and responding with structured factual claims. 
+A CLI research assistant powered by **Kimi K2** (via Groq) + **Tavily** web search + **LangGraph**.
 
-This agent connects to the **Groq API** but configures the language model to use the **Moonshot Kimi K2** (`moonshotai/kimi-k2-instruct`) identity.
+Ask any research question and get a structured answer with TL;DR, key points, and sources.
 
 ## Prerequisites
 
-Ensure you have the following environment variables configured:
-*   `GROQ_API_KEY`: Required by `llm` to use the Groq hosted models.
-*   `TAVILY_API_KEY`: Required by the `web_search` tool to fetch web results.
+| Variable | Purpose |
+|---|---|
+| `GROQ_API_KEY` | LLM inference via Groq |
+| `TAVILY_API_KEY` | Web search via Tavily |
 
-### Setup (Virtual Environment)
-It's recommended to run this inside a Python virtual environment to prevent package collision with your system:
+### Setup
 
 ```bash
-# 1. Create a virtual environment
 python -m venv venv
-
-# 2. Activate it (On macOS / Linux)
-source venv/bin/activate
-# Or on Windows: venv\Scripts\activate
-
-# 3. Install dependencies
+source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Running the Agent
-
-Set your API keys, then launch the interactive CLI:
+## Usage
 
 ```bash
-export GROQ_API_KEY="your_groq_api_key_here"
-export TAVILY_API_KEY="your_tavily_api_key_here"
+export GROQ_API_KEY="..."
+export TAVILY_API_KEY="..."
 
 python main.py
 ```
 
-This opens an interactive prompt where you can type research questions one after another. The agent will search the web, reason about the results, and give you a structured answer. Every run is traced and saved to `outputs/`.
+```
+╔══════════════════════════════════════════════╗
+║   🧠  Research Agent CLI                     ║
+║   Model: Kimi K2 (via Groq)                  ║
+║   Search: Tavily                              ║
+╚══════════════════════════════════════════════╝
 
-**CLI commands:**
+🔍 Ask: What are the latest AI breakthroughs?
+```
+
 | Command | Action |
-|---------|--------|
-| `quit` / `exit` / `q` | Exit the agent |
-| `clear` | Clear the screen |
+|---|---|
+| `quit` / `exit` / `q` | Exit |
+| `clear` | Clear screen |
 | `Ctrl+C` | Exit gracefully |
 
-## How it Works / Code Architecture
+Every answer is traced and saved to `outputs/`.
 
-The codebase is split into modular components that form a complete LangGraph evaluation loop:
+## Project Structure
 
-*   **`agent.py`**: This is the core brain of the application. It initializes the LLM connection via `langchain_groq.ChatGroq`. It then uses LangGraph's `create_react_agent` to bind a custom `SystemMessage` prompt and the web search tools to the model. The ReAct (Reason+Act) architecture allows the AI to form a plan, take action, observe results, and answer.
-*   **`search.py`**: Defines the `@tool` `web_search`. This function acts as the interface to the outside world. It uses the `TavilyClient` to execute a search query, parse the top 6 responses, and return the titles, URLs, and text snippets to the LLM so it can read them.
-*   **`trace.py`**: A debugging and execution utility. It takes the agent and streams its execution chunk-by-chunk using `agent.stream()`. Instead of hiding the intermediary processes, `run_with_trace` intercepts `AIMessage` and `ToolMessage` events to print precisely what tool the AI decided to call, what data it got back, and its final derived answer.
-*   **`main.py`**: The main entrypoint. It performs simple environment validation to ensure keys are populated before cleanly invoking the trace.
-*   **`test_agent.py`**: An end-to-end (E2E) testing suite that guarantees the logic functions without relying on external APIs. It uses Python's `unittest.mock.patch` to intercept requests to Tavily and return a controlled, dummy payload. This ensures the prompt structure and code syntax haven't broken.
+```
+research-agent/
+├── main.py                          # Entry point
+├── requirements.txt
+├── research_agent/
+│   ├── __init__.py
+│   ├── agent.py                     # LLM + ReAct agent config
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   └── search.py                # Tavily web search tool
+│   ├── core/
+│   │   ├── __init__.py
+│   │   └── tracer.py                # Execution tracing + file logging
+│   └── cli/
+│       ├── __init__.py
+│       └── app.py                   # Interactive REPL
+└── tests/
+    ├── __init__.py
+    └── test_agent.py                # E2E tests (mocked APIs)
+```
 
-## E2E Testing
+### Architecture
 
-You can run the mock E2E tests using Python's standard `unittest`:
+| Layer | Responsibility | Files |
+|---|---|---|
+| **CLI** | User interaction, env checks | `cli/app.py` |
+| **Core** | Tracing, logging, orchestration | `core/tracer.py` |
+| **Agent** | LLM config, ReAct loop | `agent.py` |
+| **Tools** | External integrations | `tools/search.py` |
+
+Dependencies flow inward: CLI → Core → Agent → Tools.
+
+## Testing
 
 ```bash
-python -m unittest test_agent.py
+python -m unittest tests.test_agent -v
 ```
+
+Tests mock the Tavily API so no network or API keys are needed.
