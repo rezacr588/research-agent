@@ -10,13 +10,12 @@ Set PLAIN_OUTPUT=1 to disable rich formatting (used in tests).
 
 import logging
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
-from research_agent.agent import get_agent
+from research_agent.agent import get_agent, reset_agent
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +64,18 @@ def save_session_trace() -> None:
         logger.debug("Could not save session trace: %s", exc)
 
 
+def clear_session() -> None:
+    """Reset the session lines (for test isolation)."""
+    _session_lines.clear()
+
+
 def _run_rich(agent, question: str) -> None:
     """Rich mode: panels for tools, live-rendered Markdown for answers."""
     from rich.console import Console
     from rich.live import Live
     from rich.markdown import Markdown
     from rich.panel import Panel
+    from rich.text import Text
     from rich.theme import Theme
 
     theme = Theme({
@@ -78,13 +83,12 @@ def _run_rich(agent, question: str) -> None:
         "result": "bold blue",
         "answer": "bold green",
         "error": "bold red",
-        "thinking": "italic magenta",
     })
     console = Console(theme=theme)
     console.print()
 
     answer_buffer = ""
-    live_display = None
+    live_display: Live | None = None
 
     try:
         for chunk, metadata in agent.stream(
@@ -113,18 +117,29 @@ def _run_rich(agent, question: str) -> None:
                 # Content token — stream as live-rendered Markdown
                 elif chunk.content:
                     answer_buffer += chunk.content
-                    rendered = Panel(
-                        Markdown(answer_buffer),
-                        title="✅ Answer",
-                        border_style="green",
-                        padding=(1, 2),
-                    )
+                    # Wrap in try since partial Markdown can cause parse errors
+                    try:
+                        rendered = Panel(
+                            Markdown(answer_buffer),
+                            title="✅ Answer",
+                            border_style="green",
+                            padding=(1, 2),
+                        )
+                    except Exception:
+                        # Fallback to plain text if Markdown parsing fails mid-stream
+                        rendered = Panel(
+                            Text(answer_buffer),
+                            title="✅ Answer",
+                            border_style="green",
+                            padding=(1, 2),
+                        )
+
                     if live_display is None:
                         console.print()
                         live_display = Live(
                             rendered,
                             console=console,
-                            refresh_per_second=15,
+                            refresh_per_second=12,
                             vertical_overflow="visible",
                         )
                         live_display.start()
@@ -147,27 +162,23 @@ def _run_rich(agent, question: str) -> None:
                 )
                 _session_lines.append(f"🔧 Tool result: {preview}")
 
-        # Finalize
-        if live_display:
-            live_display.stop()
-
-        if answer_buffer:
-            _session_lines.append(f"✅ Final answer:\n{answer_buffer}")
-
+    except KeyboardInterrupt:
+        console.print("\n[yellow]⚠️  Interrupted.[/yellow]")
+        _session_lines.append("⚠️  Interrupted by user.")
     except Exception as exc:
-        if live_display:
-            live_display.stop()
         error_msg = str(exc)
         if "503" in error_msg or "over capacity" in error_msg:
             console.print(
                 Panel(
-                    "[bold]The model is temporarily over capacity.[/bold]\n"
-                    "Please wait a moment and try again.",
+                    "[bold]Model is temporarily over capacity.[/bold]\n"
+                    "Retrying with fallback model...",
                     title="⚠️  Service Busy",
                     border_style="yellow",
                     padding=(0, 1),
                 )
             )
+            # Force agent re-creation so fallback kicks in next question
+            reset_agent()
         elif "429" in error_msg or "rate" in error_msg.lower():
             console.print(
                 Panel(
@@ -181,6 +192,16 @@ def _run_rich(agent, question: str) -> None:
         else:
             console.print(f"[error]❌ Error: {error_msg}[/error]")
         _session_lines.append(f"❌ Error: {error_msg}")
+    finally:
+        # Always clean up the Live display to prevent terminal corruption
+        if live_display:
+            try:
+                live_display.stop()
+            except Exception:
+                pass
+
+    if answer_buffer:
+        _session_lines.append(f"✅ Final answer:\n{answer_buffer}")
 
 
 def _run_plain(agent, question: str) -> None:

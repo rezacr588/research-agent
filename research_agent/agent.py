@@ -4,6 +4,7 @@ Agent configuration with model fallback.
 Provides a factory function that lazily initialises the LLM
 and creates a LangGraph ReAct agent. If the primary model
 (Kimi K2) is unavailable, falls back to GPT OSS 120B.
+The agent is cached per session to avoid repeated API probes.
 """
 
 import logging
@@ -48,6 +49,10 @@ Structure every answer as:
 3) **Sources** (URLs from your search results)
 """
 
+# Cached agent and model name (set once per session)
+_cached_agent = None
+_active_model: str = ""
+
 
 def _build_system_prompt() -> SystemMessage:
     """Build the system prompt with the current date/time injected."""
@@ -59,19 +64,25 @@ def _build_system_prompt() -> SystemMessage:
 
 
 def get_agent():
-    """Create a ReAct agent, trying models in order until one works."""
+    """Return the cached agent, or create one (with fallback) on first call."""
+    global _cached_agent, _active_model
+    if _cached_agent is not None:
+        return _cached_agent
+
     for model_id in MODELS:
         try:
             llm = ChatGroq(model=model_id, temperature=0)
             # Quick probe to verify the model is reachable
             llm.invoke("ping")
             logger.info("Using model: %s", model_id)
+            _active_model = model_id
             _print_model_info(model_id)
-            return create_react_agent(
+            _cached_agent = create_react_agent(
                 llm,
                 tools=[web_search],
                 prompt=_build_system_prompt(),
             )
+            return _cached_agent
         except Exception as exc:
             logger.warning("Model %s unavailable (%s), trying next...", model_id, exc)
             _print_fallback_warning(model_id, exc)
@@ -81,6 +92,17 @@ def get_agent():
         f"All models are unavailable: {MODELS}. "
         "Check https://groqstatus.com for incidents."
     )
+
+
+def get_active_model() -> str:
+    """Return the model ID currently in use."""
+    return _active_model
+
+
+def reset_agent() -> None:
+    """Force re-creation of the agent (e.g., after a 503 mid-session)."""
+    global _cached_agent
+    _cached_agent = None
 
 
 def _print_model_info(model_id: str) -> None:
