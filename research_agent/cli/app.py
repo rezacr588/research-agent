@@ -66,7 +66,7 @@ def main() -> None:
     _print_banner()
 
     # Lazy import so env check runs first
-    from research_agent.core import run_with_trace
+    from research_agent.core import run_with_trace, save_session_trace
 
     while True:
         try:
@@ -92,3 +92,6 @@ def main() -> None:
         except KeyboardInterrupt:
             console.print("\n[warning]⚠️  Interrupted. Type 'quit' to exit.[/warning]")
         console.print()
+
+    # Save entire session trace on exit
+    save_session_trace()
