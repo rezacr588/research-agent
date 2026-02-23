@@ -3,3 +3,4 @@ langchain_groq
 langgraph
 tavily-python
 rich
+python-dotenv
