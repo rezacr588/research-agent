@@ -1,12 +1,12 @@
 """
-Agent configuration.
+Agent configuration with model fallback.
 
 Provides a factory function that lazily initialises the LLM
-(Kimi K2 via Groq) and creates a LangGraph ReAct agent.
-The system prompt includes the current date/time so the agent
-is aware of the real-world timeline.
+and creates a LangGraph ReAct agent. If the primary model
+(Kimi K2) is unavailable, falls back to GPT OSS 120B.
 """
 
+import logging
 from datetime import datetime
 
 from langchain_core.messages import SystemMessage
@@ -14,6 +14,13 @@ from langchain_groq import ChatGroq
 from langgraph.prebuilt import create_react_agent
 
 from research_agent.tools import web_search
+
+logger = logging.getLogger(__name__)
+
+MODELS = [
+    "moonshotai/kimi-k2-instruct",
+    "openai/gpt-oss-120b",
+]
 
 SYSTEM_PROMPT_TEMPLATE = """\
 You are Research Agent — a sharp, thorough, and friendly AI research assistant.
@@ -52,13 +59,43 @@ def _build_system_prompt() -> SystemMessage:
 
 
 def get_agent():
-    """Create a fresh ReAct agent with the current timestamp in the prompt."""
-    llm = ChatGroq(
-        model="moonshotai/kimi-k2-instruct",
-        temperature=0,
+    """Create a ReAct agent, trying models in order until one works."""
+    for model_id in MODELS:
+        try:
+            llm = ChatGroq(model=model_id, temperature=0)
+            # Quick probe to verify the model is reachable
+            llm.invoke("ping")
+            logger.info("Using model: %s", model_id)
+            _print_model_info(model_id)
+            return create_react_agent(
+                llm,
+                tools=[web_search],
+                prompt=_build_system_prompt(),
+            )
+        except Exception as exc:
+            logger.warning("Model %s unavailable (%s), trying next...", model_id, exc)
+            _print_fallback_warning(model_id, exc)
+            continue
+
+    raise RuntimeError(
+        f"All models are unavailable: {MODELS}. "
+        "Check https://groqstatus.com for incidents."
     )
-    return create_react_agent(
-        llm,
-        tools=[web_search],
-        prompt=_build_system_prompt(),
-    )
+
+
+def _print_model_info(model_id: str) -> None:
+    """Show which model was selected."""
+    try:
+        from rich.console import Console
+        Console().print(f"[dim]🤖 Model: {model_id}[/dim]")
+    except ImportError:
+        print(f"Model: {model_id}")
+
+
+def _print_fallback_warning(model_id: str, exc: Exception) -> None:
+    """Warn the user about a model fallback."""
+    try:
+        from rich.console import Console
+        Console().print(f"[yellow]⚠️  {model_id} unavailable, trying fallback...[/yellow]")
+    except ImportError:
+        print(f"Warning: {model_id} unavailable ({exc}), trying fallback...")

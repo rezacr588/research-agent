@@ -1,9 +1,9 @@
 """
 Execution tracer with real-time token streaming.
 
-Streams the agent's response token-by-token. Tool calls and
-results appear as panels; the final answer streams live.
-Traces accumulate per session and save on CLI exit.
+Streams the agent's answer token-by-token with rich Markdown
+rendering via Live display. Tool calls and results appear
+as styled panels. Traces accumulate per session.
 
 Set PLAIN_OUTPUT=1 to disable rich formatting (used in tests).
 """
@@ -60,38 +60,46 @@ def save_session_trace() -> None:
             print(f"Session trace saved to {filepath}")
         else:
             from rich.console import Console
-            Console().print(f"[dim]📁 Session trace saved to {filepath}[/dim]")
+            Console().print(f"[dim]📁 Trace saved to {filepath}[/dim]")
     except OSError as exc:
         logger.debug("Could not save session trace: %s", exc)
 
 
 def _run_rich(agent, question: str) -> None:
-    """Rich mode: panels for tools, live token streaming for answers."""
+    """Rich mode: panels for tools, live-rendered Markdown for answers."""
     from rich.console import Console
+    from rich.live import Live
+    from rich.markdown import Markdown
     from rich.panel import Panel
-    from rich.text import Text
+    from rich.theme import Theme
 
-    console = Console()
+    theme = Theme({
+        "tool": "bold yellow",
+        "result": "bold blue",
+        "answer": "bold green",
+        "error": "bold red",
+        "thinking": "italic magenta",
+    })
+    console = Console(theme=theme)
     console.print()
 
     answer_buffer = ""
-    streaming_answer = False
+    live_display = None
 
     try:
         for chunk, metadata in agent.stream(
             {"messages": [{"role": "user", "content": question}]},
             stream_mode="messages",
         ):
-            # --- AI message chunks (thinking / answer tokens) ---
+            # --- AI message chunks ---
             if isinstance(chunk, AIMessageChunk):
-                # Tool call chunk — show panel when the name arrives
+                # Tool call
                 if chunk.tool_call_chunks:
                     for tc in chunk.tool_call_chunks:
                         if tc.get("name"):
-                            # If we were streaming an answer, close it
-                            if streaming_answer:
-                                console.print()
-                                streaming_answer = False
+                            if live_display:
+                                live_display.stop()
+                                live_display = None
                             console.print(
                                 Panel(
                                     f"[bold]Searching:[/bold] {tc['name']}",
@@ -102,20 +110,32 @@ def _run_rich(agent, question: str) -> None:
                             )
                             _session_lines.append(f"🧠 Tool call: {tc['name']}")
 
-                # Content token — stream it live
+                # Content token — stream as live-rendered Markdown
                 elif chunk.content:
-                    if not streaming_answer:
-                        # Start the answer stream with a header
-                        console.print()
-                        console.print("[bold green]✅ Answer[/bold green]")
-                        console.print("[green]─" * 50 + "[/green]")
-                        streaming_answer = True
-                    sys.stdout.write(chunk.content)
-                    sys.stdout.flush()
                     answer_buffer += chunk.content
+                    rendered = Panel(
+                        Markdown(answer_buffer),
+                        title="✅ Answer",
+                        border_style="green",
+                        padding=(1, 2),
+                    )
+                    if live_display is None:
+                        console.print()
+                        live_display = Live(
+                            rendered,
+                            console=console,
+                            refresh_per_second=15,
+                            vertical_overflow="visible",
+                        )
+                        live_display.start()
+                    else:
+                        live_display.update(rendered)
 
             # --- Tool result messages ---
             elif isinstance(chunk, ToolMessage):
+                if live_display:
+                    live_display.stop()
+                    live_display = None
                 preview = str(chunk.content)[:400]
                 console.print(
                     Panel(
@@ -127,18 +147,17 @@ def _run_rich(agent, question: str) -> None:
                 )
                 _session_lines.append(f"🔧 Tool result: {preview}")
 
-        # Close the answer stream
-        if streaming_answer:
-            console.print()
-            console.print("[green]─" * 50 + "[/green]")
+        # Finalize
+        if live_display:
+            live_display.stop()
 
         if answer_buffer:
             _session_lines.append(f"✅ Final answer:\n{answer_buffer}")
 
     except Exception as exc:
+        if live_display:
+            live_display.stop()
         error_msg = str(exc)
-        if streaming_answer:
-            console.print()
         if "503" in error_msg or "over capacity" in error_msg:
             console.print(
                 Panel(
@@ -160,12 +179,12 @@ def _run_rich(agent, question: str) -> None:
                 )
             )
         else:
-            console.print(f"[bold red]❌ Error: {error_msg}[/bold red]")
+            console.print(f"[error]❌ Error: {error_msg}[/error]")
         _session_lines.append(f"❌ Error: {error_msg}")
 
 
 def _run_plain(agent, question: str) -> None:
-    """Plain mode: simple print output for tests and piped environments."""
+    """Plain mode: simple print output for tests."""
     try:
         for chunk in agent.stream(
             {"messages": [{"role": "user", "content": question}]},
