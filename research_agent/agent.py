@@ -1,9 +1,11 @@
 """
 Agent configuration.
 
-Initialises the LLM (Kimi K2 via Groq) and creates a LangGraph
-ReAct agent bound to the web_search tool.
+Provides a factory function that lazily initialises the LLM
+(Kimi K2 via Groq) and creates a LangGraph ReAct agent.
 """
+
+from functools import lru_cache
 
 from langchain_core.messages import SystemMessage
 from langchain_groq import ChatGroq
@@ -19,13 +21,16 @@ SYSTEM_PROMPT = (
     "3) Sources (URLs)\n"
 )
 
-llm = ChatGroq(
-    model="moonshotai/kimi-k2-instruct",
-    temperature=0,
-)
 
-agent = create_react_agent(
-    llm,
-    tools=[web_search],
-    prompt=SystemMessage(content=SYSTEM_PROMPT),
-)
+@lru_cache(maxsize=1)
+def get_agent():
+    """Lazily create and cache the ReAct agent (avoids cold-start at import)."""
+    llm = ChatGroq(
+        model="moonshotai/kimi-k2-instruct",
+        temperature=0,
+    )
+    return create_react_agent(
+        llm,
+        tools=[web_search],
+        prompt=SystemMessage(content=SYSTEM_PROMPT),
+    )
